@@ -29,6 +29,8 @@ my $BORING = qr/$COLOR|\s/;
 my @removed;
 my @added;
 my $in_hunk;
+my $removed_lines = 0;
+my $added_lines = 0;
 my $graph_indent = 0;
 
 our $line_cb = sub { print @_ };
@@ -91,17 +93,59 @@ sub handle_line {
 	if (!$in_hunk) {
 		$line_cb->($orig);
 		$in_hunk = /^$COLOR*\@\@ /;
+		if ($in_hunk) {
+			($removed_lines, $added_lines) = (
+				/^$COLOR*\@\@ -\d+(?:,(\d+))? *\+\d+(?:,(\d+))? \@\@/
+			);
+			if (!defined($removed_lines)) {
+				$removed_lines = 1;
+			}
+			if (!defined($added_lines)) {
+				$added_lines = 1;
+			}
+			$in_hunk = '@';
+		}
 	}
 	elsif (/^$COLOR*-/) {
+		if ($in_hunk eq '+') {
+			flush();
+		}
+		$in_hunk = '-';
+		$removed_lines--;
 		push @removed, $orig;
 	}
 	elsif (/^$COLOR*\+/) {
+		$in_hunk = '+';
+		$added_lines--;
+		push @added, $orig;
+	}
+	elsif (/^$COLOR*[ =]/) {
+		$in_hunk = ' ';
+		$removed_lines--;
+		$added_lines--;
+		if (@removed || @added) {
+			flush();
+		}
+		$line_cb->($orig);
+	}
+	elsif ($in_hunk eq '-' || $in_hunk eq '@') {
+		push @removed, $orig;
+		push @added, '';
+	}
+	elsif ($in_hunk eq '+') {
+		push @removed, '';
 		push @added, $orig;
 	}
 	else {
-		flush();
 		$line_cb->($orig);
-		$in_hunk = /^$COLOR*[\@ ]/;
+	}
+	if ($in_hunk && (($removed_lines == 0 && $added_lines == 0) ||
+	    ($removed_lines < 0 && $added_lines < 0))) {
+		$in_hunk = 0;
+		flush();
+		# Flush at the end of every hunk to show patches as
+		# soon as possible.
+		$flush_cb->();
 	}
 
 	# Most of the time there is enough output to keep things streaming,
@@ -162,8 +206,21 @@ sub show_hunk {
 	}
 
 	my @queue;
-	for (my $i = 0; $i < @$a; $i++) {
-		my ($rm, $add) = highlight_pair($a->[$i], $b->[$i]);
+	for (my ($i, $j) = (0, 0); $i < @$a || $j < @$b; $i++, $j++) {
+		if ($i < @$a && $a->[$i] !~ /^$COLOR*[-+]/) {
+			$line_cb->($a->[$i]);
+			$i++;
+			redo;
+		}
+		if ($j < @$b && $b->[$j] !~ /^$COLOR*[-+]/) {
+			push @queue, $b->[$j];
+			$j++;
+			redo;
+		}
+		unless ($i < @$a && $j < @$b) {
+			last;
+		}
+		my ($rm, $add) = highlight_pair($a->[$i], $b->[$j]);
 		$line_cb->($rm);
 		push @queue, $add;
 	}
